@@ -45,9 +45,10 @@ def _require_biopython(feature: str) -> None:
     """Raise a clear ImportError if biopython is missing."""
     if importlib.util.find_spec("Bio") is None:
         raise ImportError(
-            f"{feature} requires biopython. Install with `pip install \"tmap2[proteins]\"` "
+            f'{feature} requires biopython. Install with `pip install "tmap2[proteins]"` '
             f"or `pip install biopython`."
         )
+
 
 # ---------------------------------------------------------------------------
 # Amino acid lookup tables

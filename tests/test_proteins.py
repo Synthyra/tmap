@@ -546,9 +546,7 @@ class TestReadPdb:
         assert result["length"] == 4
 
     def test_no_header_uses_filename(self, tmp_path):
-        pdb_content = (
-            "ATOM      1  CA  ALA A   1       1.000   2.000   3.000  1.00 80.00\nEND\n"
-        )
+        pdb_content = "ATOM      1  CA  ALA A   1       1.000   2.000   3.000  1.00 80.00\nEND\n"
         f = tmp_path / "myprotein.pdb"
         f.write_text(pdb_content)
         result = read_pdb(f)
