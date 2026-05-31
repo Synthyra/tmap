@@ -217,6 +217,17 @@ def _hex_to_css_rgba(hex_color: str, alpha: float = 1.0) -> str:
     return f"rgba({r}, {g}, {b}, {alpha_str})"
 
 
+def _hex_colors_to_rgb_uint8(colors: Sequence[str]) -> NDArray[np.uint8]:
+    """Convert hex colors to an ``(n, 3)`` uint8 RGB array."""
+    arr = np.empty((len(colors), 3), dtype=np.uint8)
+    for idx, color in enumerate(colors):
+        normalized = _normalize_hex_color(color).lstrip("#")
+        arr[idx, 0] = int(normalized[0:2], 16)
+        arr[idx, 1] = int(normalized[2:4], 16)
+        arr[idx, 2] = int(normalized[4:6], 16)
+    return arr
+
+
 # TODO(ISS-014): Implement categorical=True preserves listed colors when available
 def _colormap_to_hex(name: str) -> list[str]:
     """
@@ -411,6 +422,7 @@ class TmapViz:
         self._points_array: np.ndarray | None = None  # Shape: (n, 2)
         self._edges_s: np.ndarray | None = None
         self._edges_t: np.ndarray | None = None
+        self._edge_colors: np.ndarray | None = None
         self._layout_keys: list[str] = []
         self._labels_keys: list[str] = []
         self._smiles_column: str | None = None
@@ -1159,6 +1171,28 @@ class TmapViz:
 
         self._edges_s = s_arr
         self._edges_t = t_arr
+        self._edge_colors = None
+
+    def set_edge_colors(self, colors: Sequence[str]) -> None:
+        """Set one hex color per edge for visualization templates.
+
+        Args:
+            colors: Hex color strings for each edge in the current edge order.
+
+        Raises:
+            ValueError: If edges are not set or the color count differs from
+                the edge count.
+        """
+        if self._edges_s is None or self._edges_t is None:
+            raise ValueError("set_edges must be called before set_edge_colors")
+
+        edge_colors = _hex_colors_to_rgb_uint8(colors)
+        if len(edge_colors) != len(self._edges_s):
+            raise ValueError(
+                f"Edge color count must match edge count. "
+                f"Got {len(edge_colors)} colors for {len(self._edges_s)} edges."
+            )
+        self._edge_colors = edge_colors
 
     def set_edge_style(
         self,
@@ -1608,12 +1642,18 @@ class TmapViz:
 
         # Pack edges if present
         edges_b64 = ""
+        edge_colors_b64 = ""
+        edge_color_mode = "single"
         n_edges = 0
         if self._edges_s is not None and self._edges_t is not None:
             n_edges = len(self._edges_s)
             edges_combined = np.concatenate([self._edges_s, self._edges_t]).astype(np.uint32)
             edges_compressed = gzip.compress(edges_combined.tobytes(), compresslevel=6)
             edges_b64 = base64.b64encode(edges_compressed).decode("ascii")
+            if self._edge_colors is not None:
+                edge_color_mode = "per-edge"
+                edge_colors_compressed = gzip.compress(self._edge_colors.tobytes(), compresslevel=6)
+                edge_colors_b64 = base64.b64encode(edge_colors_compressed).decode("ascii")
 
         # Build metadata (same flat structure as write_static)
         layout_options = list(self._layout_keys)
@@ -1642,6 +1682,8 @@ class TmapViz:
             "opacity": self.opacity,
             "edgeStrokeStyle": _hex_to_css_rgba(self.edge_color, self.edge_opacity),
             "edgeWidth": self.edge_width,
+            "edgeColorMode": edge_color_mode,
+            "edgeColorDtype": "uint8" if edge_color_mode == "per-edge" else None,
             "backgroundColor": _hex_to_rgba(self.background_color),
             "layoutOptions": layout_options,
             "labelOptions": label_options,
@@ -1683,6 +1725,7 @@ class TmapViz:
             inline_coords=coords_b64,
             inline_columns=columns_b64,
             inline_edges=edges_b64,
+            inline_edge_colors=edge_colors_b64,
         )
 
     def write_html(
@@ -1765,11 +1808,16 @@ class TmapViz:
 
         # Edges
         n_edges = 0
+        edge_color_mode = "single"
         if self._edges_s is not None and self._edges_t is not None:
             n_edges = len(self._edges_s)
             edges_combined = np.concatenate([self._edges_s, self._edges_t]).astype(np.uint32)
             edges_compressed = gzip.compress(edges_combined.tobytes(), compresslevel=6)
             (output_dir / "edges.bin").write_bytes(edges_compressed)
+            if self._edge_colors is not None:
+                edge_color_mode = "per-edge"
+                edge_colors_compressed = gzip.compress(self._edge_colors.tobytes(), compresslevel=6)
+                (output_dir / "edge_colors.bin").write_bytes(edge_colors_compressed)
 
         # Columns
         columns_meta: dict[str, dict[str, Any]] = {}
@@ -1847,6 +1895,8 @@ class TmapViz:
             "opacity": self.opacity,
             "edgeStrokeStyle": _hex_to_css_rgba(self.edge_color, self.edge_opacity),
             "edgeWidth": self.edge_width,
+            "edgeColorMode": edge_color_mode,
+            "edgeColorDtype": "uint8" if edge_color_mode == "per-edge" else None,
             "backgroundColor": _hex_to_rgba(self.background_color),
             "layoutOptions": layout_options,
             "labelOptions": label_options,
@@ -1890,6 +1940,7 @@ class TmapViz:
             inline_coords="",
             inline_columns={},
             inline_edges="",
+            inline_edge_colors="",
         )
         (output_dir / "index.html").write_text(html, encoding="utf-8")
 

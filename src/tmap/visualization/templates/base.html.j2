@@ -929,6 +929,7 @@ function decodeGzipBuffer(buffer, dtype) {
   switch (dtype) {
     case 'uint16': return new Uint16Array(aligned);
     case 'uint32': return new Uint32Array(aligned);
+    case 'uint8': return new Uint8Array(aligned);
     case 'float32': return new Float32Array(aligned);
     case 'int32': return new Int32Array(aligned);
     default: throw new Error('Unknown dtype: ' + dtype);
@@ -995,6 +996,8 @@ const hasEdges = nEdges > 0;
 const parsedEdgeWidth = Number(metadata.edgeWidth);
 const edgeWidth = Number.isFinite(parsedEdgeWidth) && parsedEdgeWidth > 0 ? parsedEdgeWidth : 2;
 const edgeStrokeStyle = metadata.edgeStrokeStyle || 'rgba(0, 0, 0, 0.5)';
+const edgeColorMode = metadata.edgeColorMode || 'single';
+const hasPerEdgeColors = edgeColorMode === 'per-edge';
 
 updateProgress(40, 'Loading columns...');
 
@@ -1189,18 +1192,17 @@ async function loadEdges() {
   const eS = raw.subarray(0, nEdges);
   const eT = raw.subarray(nEdges, 2 * nEdges);
 
-  // Interleaved position buffer from point coordinates
-  const positions = new Float32Array(n * 2);
-  for (let i = 0; i < n; i++) {
-    positions[i * 2] = x[i];
-    positions[i * 2 + 1] = y[i];
-  }
-
-  // Element index buffer: pairs of vertex indices per edge
-  const elements = new Uint32Array(nEdges * 2);
-  for (let i = 0; i < nEdges; i++) {
-    elements[i * 2] = eS[i];
-    elements[i * 2 + 1] = eT[i];
+  let edgeRgb = null;
+  if (hasPerEdgeColors) {
+{% if inline_data %}
+    const edgeColorRaw = Uint8Array.from(atob("{{ inline_edge_colors }}"), c => c.charCodeAt(0));
+    edgeRgb = decodeGzipBuffer(edgeColorRaw.buffer, 'uint8');
+{% else %}
+    edgeRgb = decodeGzipBuffer(await fetch('./edge_colors.bin').then(r => r.arrayBuffer()), 'uint8');
+{% endif %}
+    if (edgeRgb.length !== nEdges * 3) {
+      throw new Error('Expected ' + (nEdges * 3) + ' edge color bytes, got ' + edgeRgb.length);
+    }
   }
 
   edgeRegl = createREGL({
@@ -1209,27 +1211,91 @@ async function loadEdges() {
     attributes: { alpha: true, premultipliedAlpha: false, antialias: true },
   });
 
-  const vertSrc = 'precision highp float; attribute vec2 position; uniform vec2 u_scale; uniform vec2 u_offset; void main() { gl_Position = vec4(position * u_scale + u_offset, 0.0, 1.0); }';
-  const fragSrc = 'precision mediump float; uniform vec4 u_color; void main() { gl_FragColor = u_color; }';
+  if (edgeRgb) {
+    const positions = new Float32Array(nEdges * 4);
+    const colors = new Float32Array(nEdges * 8);
+    for (let i = 0; i < nEdges; i++) {
+      const s = eS[i];
+      const t = eT[i];
+      const p = i * 4;
+      positions[p] = x[s];
+      positions[p + 1] = y[s];
+      positions[p + 2] = x[t];
+      positions[p + 3] = y[t];
 
-  drawEdgesCmd = edgeRegl({
-    vert: vertSrc,
-    frag: fragSrc,
-    attributes: {
-      position: { buffer: edgeRegl.buffer(positions), size: 2 },
-    },
-    elements: edgeRegl.elements({ data: elements, primitive: 'lines', type: 'uint32' }),
-    uniforms: {
-      u_scale: edgeRegl.prop('scale'),
-      u_offset: edgeRegl.prop('offset'),
-      u_color: edgeRegl.prop('color'),
-    },
-    blend: {
-      enable: true,
-      func: { srcRGB: 'src alpha', srcAlpha: 1, dstRGB: 'one minus src alpha', dstAlpha: 1 },
-    },
-    depth: { enable: false },
-  });
+      const c = i * 3;
+      const r = edgeRgb[c] / 255;
+      const g = edgeRgb[c + 1] / 255;
+      const b = edgeRgb[c + 2] / 255;
+      const a = edgeColor[3];
+      const out = i * 8;
+      colors[out] = r;
+      colors[out + 1] = g;
+      colors[out + 2] = b;
+      colors[out + 3] = a;
+      colors[out + 4] = r;
+      colors[out + 5] = g;
+      colors[out + 6] = b;
+      colors[out + 7] = a;
+    }
+
+    const vertSrc = 'precision highp float; attribute vec2 position; attribute vec4 edge_color; varying vec4 v_color; uniform vec2 u_scale; uniform vec2 u_offset; void main() { v_color = edge_color; gl_Position = vec4(position * u_scale + u_offset, 0.0, 1.0); }';
+    const fragSrc = 'precision mediump float; varying vec4 v_color; void main() { gl_FragColor = v_color; }';
+
+    drawEdgesCmd = edgeRegl({
+      vert: vertSrc,
+      frag: fragSrc,
+      attributes: {
+        position: { buffer: edgeRegl.buffer(positions), size: 2 },
+        edge_color: { buffer: edgeRegl.buffer(colors), size: 4 },
+      },
+      primitive: 'lines',
+      count: nEdges * 2,
+      uniforms: {
+        u_scale: edgeRegl.prop('scale'),
+        u_offset: edgeRegl.prop('offset'),
+      },
+      blend: {
+        enable: true,
+        func: { srcRGB: 'src alpha', srcAlpha: 1, dstRGB: 'one minus src alpha', dstAlpha: 1 },
+      },
+      depth: { enable: false },
+    });
+  } else {
+    const positions = new Float32Array(n * 2);
+    for (let i = 0; i < n; i++) {
+      positions[i * 2] = x[i];
+      positions[i * 2 + 1] = y[i];
+    }
+
+    const elements = new Uint32Array(nEdges * 2);
+    for (let i = 0; i < nEdges; i++) {
+      elements[i * 2] = eS[i];
+      elements[i * 2 + 1] = eT[i];
+    }
+
+    const vertSrc = 'precision highp float; attribute vec2 position; uniform vec2 u_scale; uniform vec2 u_offset; void main() { gl_Position = vec4(position * u_scale + u_offset, 0.0, 1.0); }';
+    const fragSrc = 'precision mediump float; uniform vec4 u_color; void main() { gl_FragColor = u_color; }';
+
+    drawEdgesCmd = edgeRegl({
+      vert: vertSrc,
+      frag: fragSrc,
+      attributes: {
+        position: { buffer: edgeRegl.buffer(positions), size: 2 },
+      },
+      elements: edgeRegl.elements({ data: elements, primitive: 'lines', type: 'uint32' }),
+      uniforms: {
+        u_scale: edgeRegl.prop('scale'),
+        u_offset: edgeRegl.prop('offset'),
+        u_color: edgeRegl.prop('color'),
+      },
+      blend: {
+        enable: true,
+        func: { srcRGB: 'src alpha', srcAlpha: 1, dstRGB: 'one minus src alpha', dstAlpha: 1 },
+      },
+      depth: { enable: false },
+    });
+  }
 
   edgesLoaded = true;
   edgeNeedsRedraw = true;
@@ -1246,11 +1312,12 @@ function renderEdges() {
   const xRange = xd[1] - xd[0] || 1;
   const yRange = yd[1] - yd[0] || 1;
 
-  drawEdgesCmd({
+  const drawProps = {
     scale: [2 / xRange, 2 / yRange],
     offset: [-(xd[1] + xd[0]) / xRange, -(yd[1] + yd[0]) / yRange],
-    color: edgeColor,
-  });
+  };
+  if (!hasPerEdgeColors) drawProps.color = edgeColor;
+  drawEdgesCmd(drawProps);
   edgeNeedsRedraw = false;
 }
 
@@ -2509,7 +2576,9 @@ tbTheme.addEventListener('click', () => {
   isDarkTheme = !isDarkTheme;
   document.documentElement.dataset.theme = isDarkTheme ? '' : 'light';
   scatterplot.set({ backgroundColor: isDarkTheme ? darkBg : lightBg });
-  edgeColor = isDarkTheme ? parseEdgeColor(edgeStrokeStyle) : [1, 1, 1, edgeColor[3]];
+  if (!hasPerEdgeColors) {
+    edgeColor = isDarkTheme ? parseEdgeColor(edgeStrokeStyle) : [1, 1, 1, edgeColor[3]];
+  }
   edgeNeedsRedraw = true;
   if (typeof renderEdges === 'function') renderEdges();
   tbTheme.innerHTML = isDarkTheme
