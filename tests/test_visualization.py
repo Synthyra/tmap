@@ -912,6 +912,67 @@ class TestSetEdges:
         assert meta["edgeStrokeStyle"] == "rgba(255, 0, 51, 0.35)"
         assert meta["edgeWidth"] == 4.5
 
+    def test_set_edge_colors_updates_values(self, viz_with_data):
+        """Per-edge colors should be normalized to packed RGB bytes."""
+        viz, data = viz_with_data
+        viz.set_edges([0, 1], [1, 2])
+        viz.set_edge_colors(["#f03", "#00aa11"])
+
+        assert viz._edge_colors is not None
+        assert viz._edge_colors.tolist() == [[255, 0, 51], [0, 170, 17]]
+
+    def test_set_edge_colors_requires_edges(self, viz_with_data):
+        """Per-edge colors require an existing edge array."""
+        viz, data = viz_with_data
+
+        with pytest.raises(ValueError, match="set_edges must be called"):
+            viz.set_edge_colors(["#ffffff"])
+
+    def test_set_edge_colors_mismatched_length(self, viz_with_data):
+        """One color must be provided for each edge."""
+        viz, data = viz_with_data
+        viz.set_edges([0, 1, 2], [1, 2, 3])
+
+        with pytest.raises(ValueError, match="must match edge count"):
+            viz.set_edge_colors(["#ffffff"])
+
+    def test_per_edge_colors_serialized_to_html(self, viz_with_data):
+        """Inline HTML should advertise the per-edge color payload."""
+        viz, data = viz_with_data
+        viz.add_color_layout("value", data["continuous"])
+        viz.set_edges([0, 1, 2], [1, 2, 3])
+        viz.set_edge_colors(["#f03", "#00aa11", "#0000ff"])
+
+        html = viz.to_html()
+
+        match = re.search(
+            r"const metadata = ({.*?});",
+            html,
+            re.DOTALL,
+        )
+        assert match is not None
+        meta = json.loads(match.group(1))
+        assert meta["edgeColorMode"] == "per-edge"
+        assert meta["edgeColorDtype"] == "uint8"
+        assert "edgeColorRaw" in html
+
+    def test_per_edge_colors_serialized_to_static(self, viz_with_data, tmp_path):
+        """Static output should write edge color bytes beside edge indices."""
+        viz, data = viz_with_data
+        viz.set_edges([0, 1], [1, 2])
+        viz.set_edge_colors(["#f03", "#00aa11"])
+
+        out = viz.write_static(tmp_path / "out")
+        meta = json.loads((out / "metadata.json").read_text())
+        colors = np.frombuffer(
+            gzip.decompress((out / "edge_colors.bin").read_bytes()),
+            dtype=np.uint8,
+        ).reshape(-1, 3)
+
+        assert meta["edgeColorMode"] == "per-edge"
+        assert meta["edgeColorDtype"] == "uint8"
+        assert colors.tolist() == [[255, 0, 51], [0, 170, 17]]
+
 
 class TestEdgeStyle:
     """Tests for edge style configuration."""
