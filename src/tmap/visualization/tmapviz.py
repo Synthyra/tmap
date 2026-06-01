@@ -433,6 +433,12 @@ class TmapViz:
         self._card_config: dict[str, Any] | None = None
         self._column_ui: dict[str, dict[str, Any]] = {}
 
+        # Host-integration hints (used when embedded, e.g. Atlas iframe):
+        #   initial_theme: 'light' | 'dark' applied on load (default dark).
+        #   focus_indices: point indices to center + select on load (query nodes).
+        self.initial_theme: str | None = None
+        self.focus_indices: list[int] = []
+
     @property
     def point_size(self) -> float:
         return self._point_size
@@ -1658,6 +1664,8 @@ class TmapViz:
             "card": self._card_config,
             "filters": self._filterable if self._filterable else (layout_options or None),
             "search": self._searchable if self._searchable else (label_options or None),
+            "theme": self.initial_theme if self.initial_theme in ("light", "dark") else None,
+            "focusIndices": [int(i) for i in self.focus_indices] if self.focus_indices else None,
         }
 
         metadata_json_str = json.dumps(
@@ -1863,6 +1871,8 @@ class TmapViz:
             "card": self._card_config,
             "filters": self._filterable if self._filterable else (layout_options or None),
             "search": self._searchable if self._searchable else (label_options or None),
+            "theme": self.initial_theme if self.initial_theme in ("light", "dark") else None,
+            "focusIndices": [int(i) for i in self.focus_indices] if self.focus_indices else None,
         }
 
         metadata_json = json.dumps(
