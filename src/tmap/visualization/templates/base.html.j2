@@ -704,6 +704,23 @@
       margin-bottom: 6px;
     }
 
+    /* ── Query marker overlay ── */
+    .tmap-query-marker { position: fixed; z-index: 6; pointer-events: none; transform: translate(-50%, -50%); }
+    .tmap-query-ring {
+      display: block; width: 26px; height: 26px; border-radius: 50%;
+      border: 2.5px solid #ed8936; box-shadow: 0 0 0 2px rgba(237,137,54,0.35), 0 0 10px rgba(237,137,54,0.6);
+      animation: tmapQueryPulse 1.8s ease-in-out infinite;
+    }
+    .tmap-query-label {
+      position: absolute; left: 50%; top: 100%; transform: translate(-50%, 6px);
+      background: #ed8936; color: #1a202c; font: 600 10px/1.4 -apple-system, system-ui, sans-serif;
+      padding: 1px 6px; border-radius: 4px; white-space: nowrap;
+    }
+    @keyframes tmapQueryPulse {
+      0%, 100% { box-shadow: 0 0 0 2px rgba(237,137,54,0.35), 0 0 8px rgba(237,137,54,0.5); }
+      50% { box-shadow: 0 0 0 4px rgba(237,137,54,0.18), 0 0 16px rgba(237,137,54,0.85); }
+    }
+
     /* ── Light theme ── */
     [data-theme="light"], [data-theme="light"] body { background: #0d0d0e !important; color: #1d1d1f; }
     [data-theme="light"] #toolbar {
@@ -1499,6 +1516,30 @@ if (Array.isArray(metadata.focusIndices) && metadata.focusIndices.length > 0) {
         scatterplot.zoomToPoints(focus, { transition: true, padding: 0.9 });
       }
     } catch (_) {}
+
+    // Persistent overlay marker(s) so the query stays unmistakable at any
+    // zoom: a pulsing ring + label anchored to the query point, repositioned
+    // from the scatterplot's live scales on every view change.
+    const queryMarkers = focus.map((i) => {
+      const el = document.createElement('div');
+      el.className = 'tmap-query-marker';
+      let label = 'Query';
+      try { const idCol = columns['ID']; if (idCol && idCol.values && idCol.values[i] != null) label = String(idCol.values[i]); } catch (_) {}
+      el.innerHTML = '<span class="tmap-query-ring"></span><span class="tmap-query-label">' + escapeHtml(label) + '</span>';
+      document.body.appendChild(el);
+      return { i, el };
+    });
+    const positionQueryMarkers = () => {
+      for (const m of queryMarkers) {
+        const px = edgeXScale(x[m.i]);
+        const py = edgeYScale(y[m.i]);
+        m.el.style.left = px + 'px';
+        m.el.style.top = py + 'px';
+      }
+    };
+    positionQueryMarkers();
+    scatterplot.subscribe('drawing', () => positionQueryMarkers());
+    window.addEventListener('resize', () => positionQueryMarkers());
   }
 }
 
@@ -1648,6 +1689,10 @@ let cardMinimized = false;
 scatterplot.subscribe('pointover', (idx) => { hoveredPointIndex = idx; });
 scatterplot.subscribe('pointout', () => { hoveredPointIndex = -1; });
 
+// True when rendered inside a host iframe (e.g. Atlas). The host then owns the
+// node menu / color controls and we expose a small postMessage protocol.
+const IS_EMBEDDED = !!(window.parent && window.parent !== window);
+
 // Drag detection - only select on click, not drag
 let mouseDownPos = null;
 const DRAG_THRESHOLD = 5;
@@ -1669,8 +1714,21 @@ canvas.addEventListener('mouseup', (e) => {
   if (hoveredPointIndex < 0) return;
 
   const idx = hoveredPointIndex;
-  const existingIndex = pinnedCards.indexOf(idx);
 
+  // When embedded in a host (Atlas), the host owns the node menu. Suppress the
+  // widget's own card and bridge the click instead (with viewport coords so the
+  // host can position its popup at the cursor). Only the host menu shows.
+  if (IS_EMBEDDED) {
+    let clickedId = null;
+    try {
+      const idCol = columns['ID'];
+      if (idCol && idCol.values && idCol.values[idx] !== undefined) clickedId = String(idCol.values[idx]);
+    } catch (_) { /* column not loaded yet */ }
+    window.parent.postMessage({ type: 'tmap:nodeClick', pointIndex: idx, id: clickedId, x: e.clientX, y: e.clientY }, '*');
+    return;
+  }
+
+  const existingIndex = pinnedCards.indexOf(idx);
   if (existingIndex >= 0) {
     currentCardIndex = existingIndex;
   } else {
@@ -1681,18 +1739,6 @@ canvas.addEventListener('mouseup', (e) => {
     currentCardIndex = pinnedCards.length - 1;
   }
   renderCardStack();
-
-  // Bridge the click to the embedding parent (Atlas) so it can drive
-  // side-panel annotations. pointIndex is authoritative; id is best-effort
-  // (the "ID" column may not be loaded yet — the host also maps index->id).
-  if (window.parent && window.parent !== window) {
-    let clickedId = null;
-    try {
-      const idCol = columns['ID'];
-      if (idCol && idCol.values && idCol.values[idx] !== undefined) clickedId = String(idCol.values[idx]);
-    } catch (_) { /* column not loaded yet */ }
-    window.parent.postMessage({ type: 'tmap:nodeClick', pointIndex: idx, id: clickedId }, '*');
-  }
 });
 
 function truncateString(str, maxLen) {
@@ -2527,17 +2573,34 @@ tbClear.addEventListener('click', () => { clearAllFilters(); updateToolbarCount(
 
 // ── Theme toggle ──
 const tbTheme = document.getElementById('tb-theme');
-const darkBg = [0, 0, 0, 1];
-const lightBg = [1, 1, 1, 1];
+
+// Background colors. Defaults match the Atlas network canvas (#2D3748 dark /
+// #F7FAFC light) so the embedded widget blends with the site rather than using
+// pure black/white. The host can override per-mode via setTheme {bg}.
+function hexToRgba01(hex) {
+  if (!hex || typeof hex !== 'string') return null;
+  const m = hex.replace('#', '');
+  if (m.length !== 6) return null;
+  const r = parseInt(m.slice(0, 2), 16), g = parseInt(m.slice(2, 4), 16), b = parseInt(m.slice(4, 6), 16);
+  if ([r, g, b].some((v) => Number.isNaN(v))) return null;
+  return [r / 255, g / 255, b / 255, 1];
+}
+let darkBg = hexToRgba01(metadata.darkBg) || [45 / 255, 55 / 255, 72 / 255, 1];
+let lightBg = hexToRgba01(metadata.lightBg) || [247 / 255, 250 / 255, 252 / 255, 1];
 let isDarkTheme = true;
 
 const MOON_SVG = '<svg viewBox="0 0 16 16" fill="currentColor"><path d="M6 1.5a6.5 6.5 0 1 0 7.4 9.7A5.5 5.5 0 0 1 6 1.5z"/></svg>';
 const SUN_SVG = '<svg viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="8" r="3"/><g stroke="currentColor" stroke-width="1.3" stroke-linecap="round"><line x1="8" y1="1.5" x2="8" y2="3.5"/><line x1="8" y1="12.5" x2="8" y2="14.5"/><line x1="1.5" y1="8" x2="3.5" y2="8"/><line x1="12.5" y1="8" x2="14.5" y2="8"/></g></svg>';
 
-// Apply a theme ('light' | 'dark'). Reusable so both the toolbar toggle and
-// the embedding parent (Atlas) can drive it.
-function applyTheme(mode) {
+// Apply a theme ('light' | 'dark'). Reusable so the toolbar toggle and the
+// embedding parent (Atlas) can drive it; bgOverride lets the host pass an exact
+// background hex for the given mode.
+function applyTheme(mode, bgOverride) {
   isDarkTheme = mode !== 'light';
+  if (bgOverride) {
+    const rgba = hexToRgba01(bgOverride);
+    if (rgba) { if (isDarkTheme) darkBg = rgba; else lightBg = rgba; }
+  }
   document.documentElement.dataset.theme = isDarkTheme ? '' : 'light';
   scatterplot.set({ backgroundColor: isDarkTheme ? darkBg : lightBg });
   edgeColor = isDarkTheme ? parseEdgeColor(edgeStrokeStyle) : [1, 1, 1, edgeColor[3]];
@@ -2546,19 +2609,49 @@ function applyTheme(mode) {
   if (tbTheme) tbTheme.innerHTML = isDarkTheme ? MOON_SVG : SUN_SVG;
 }
 
-// Honor an initial theme from the host (metadata.theme = 'light'|'dark'),
-// defaulting to dark. Lets Atlas match the site color mode at load.
+// Honor an initial theme from the host (metadata.theme), defaulting to dark.
 applyTheme(metadata.theme === 'light' ? 'light' : 'dark');
-
 if (tbTheme) tbTheme.addEventListener('click', () => applyTheme(isDarkTheme ? 'light' : 'dark'));
-
-// Let the embedding parent drive the theme live (the Atlas iframe is
-// same-origin, so it may also call window.__tmapSetTheme directly).
 window.__tmapSetTheme = applyTheme;
+
+// ── Host (Atlas) integration protocol ──
+// Map node id -> point index (lazy; the "ID" column may load on demand).
+let _idToIndex = null;
+async function buildIdIndex() {
+  if (_idToIndex) return _idToIndex;
+  _idToIndex = new Map();
+  try {
+    const col = await fetchColumn('ID');
+    if (col && col.values) for (let i = 0; i < col.values.length; i++) _idToIndex.set(String(col.values[i]), i);
+  } catch (_) { /* leave empty */ }
+  return _idToIndex;
+}
+async function highlightIds(ids) {
+  if (!Array.isArray(ids) || ids.length === 0) { try { scatterplot.deselect(); } catch (_) {} return; }
+  const map = await buildIdIndex();
+  const indices = [];
+  for (const id of ids) { const i = map.get(String(id)); if (i !== undefined) indices.push(i); }
+  try { if (indices.length) scatterplot.select(indices); else scatterplot.deselect(); } catch (_) {}
+}
+function setColorBy(layout) {
+  if (!layout) return;
+  try {
+    if (colorSelect) colorSelect.value = layout;
+    if (typeof applyColor === 'function') applyColor(layout);
+  } catch (_) {}
+}
+
 window.addEventListener('message', (e) => {
   const d = e && e.data;
-  if (d && d.type === 'tmap:setTheme' && (d.mode === 'light' || d.mode === 'dark')) applyTheme(d.mode);
+  if (!d || typeof d.type !== 'string') return;
+  if (d.type === 'tmap:setTheme' && (d.mode === 'light' || d.mode === 'dark')) applyTheme(d.mode, d.bg);
+  else if (d.type === 'tmap:colorBy') setColorBy(d.layout);
+  else if (d.type === 'tmap:highlight') highlightIds(d.ids);
 });
+
+// Tell the host the widget is ready so it can push the initial theme/color
+// without racing the iframe load.
+if (IS_EMBEDDED) { try { window.parent.postMessage({ type: 'tmap:ready' }, '*'); } catch (_) {} }
 
 // ── Point size slider ──
 {
