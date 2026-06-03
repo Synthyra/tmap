@@ -707,14 +707,14 @@
     /* ── Query marker overlay ── */
     .tmap-query-marker { position: fixed; z-index: 6; pointer-events: none; transform: translate(-50%, -50%); }
     .tmap-query-ring {
-      display: block; width: 26px; height: 26px; border-radius: 50%;
-      border: 2.5px solid #ed8936; box-shadow: 0 0 0 2px rgba(237,137,54,0.35), 0 0 10px rgba(237,137,54,0.6);
+      display: block; width: 40px; height: 40px; border-radius: 50%;
+      border: 3px solid #ed8936; box-shadow: 0 0 0 3px rgba(237,137,54,0.4), 0 0 14px rgba(237,137,54,0.7);
       animation: tmapQueryPulse 1.8s ease-in-out infinite;
     }
     .tmap-query-label {
-      position: absolute; left: 50%; top: 100%; transform: translate(-50%, 6px);
-      background: #ed8936; color: #1a202c; font: 600 10px/1.4 -apple-system, system-ui, sans-serif;
-      padding: 1px 6px; border-radius: 4px; white-space: nowrap;
+      position: absolute; left: 50%; top: 100%; transform: translate(-50%, 7px);
+      background: #ed8936; color: #1a202c; font: 700 11px/1.4 -apple-system, system-ui, sans-serif;
+      padding: 2px 7px; border-radius: 5px; white-space: nowrap; box-shadow: 0 2px 6px rgba(0,0,0,0.3);
     }
     @keyframes tmapQueryPulse {
       0%, 100% { box-shadow: 0 0 0 2px rgba(237,137,54,0.35), 0 0 8px rgba(237,137,54,0.5); }
@@ -1135,7 +1135,7 @@ const scatterplot = createScatterplot({
   width: canvas.clientWidth || window.innerWidth,
   height: canvas.clientHeight || window.innerHeight,
   pointSize: metadata.pointSize || 4,
-  pointSizeSelected: 8,
+  pointSizeSelected: 16,
   opacity: metadata.opacity ?? 0.85,
   opacityInactiveScale: 0.5,
   backgroundColor: metadata.backgroundColor || [0, 0, 0, 1],
@@ -2615,15 +2615,23 @@ if (tbTheme) tbTheme.addEventListener('click', () => applyTheme(isDarkTheme ? 'l
 window.__tmapSetTheme = applyTheme;
 
 // ── Host (Atlas) integration protocol ──
-// Map node id -> point index (lazy; the "ID" column may load on demand).
+// Map node id/name -> point index (lazy; columns may load on demand). The host
+// highlights by gene name (enrichment) or accession, so index both.
 let _idToIndex = null;
 async function buildIdIndex() {
   if (_idToIndex) return _idToIndex;
   _idToIndex = new Map();
-  try {
-    const col = await fetchColumn('ID');
-    if (col && col.values) for (let i = 0; i < col.values.length; i++) _idToIndex.set(String(col.values[i]), i);
-  } catch (_) { /* leave empty */ }
+  for (const colName of ['ID', 'Name']) {
+    try {
+      const col = await fetchColumn(colName);
+      if (col && col.values) {
+        for (let i = 0; i < col.values.length; i++) {
+          const key = col.values[i];
+          if (key != null && !_idToIndex.has(String(key))) _idToIndex.set(String(key), i);
+        }
+      }
+    } catch (_) { /* column unavailable */ }
+  }
   return _idToIndex;
 }
 async function highlightIds(ids) {
@@ -2641,11 +2649,34 @@ function setColorBy(layout) {
   } catch (_) {}
 }
 
+// Host-driven overlay coloring: recolor every point from a runtime per-node
+// category array + palette WITHOUT moving any point (same x, y). Used for
+// enrichment coloring so the projection never recomputes. reset:true restores
+// the active baked layout.
+function colorByValues(payload) {
+  try {
+    if (!payload || payload.reset) {
+      if (typeof applyColor === 'function') applyColor(colorSelect ? colorSelect.value : '');
+      return;
+    }
+    const z = payload.z;
+    const palette = payload.palette;
+    if (!Array.isArray(z) || z.length !== n || !Array.isArray(palette) || palette.length === 0) return;
+    const zArr = new Float32Array(n);
+    for (let i = 0; i < n; i++) zArr[i] = z[i];
+    edgeNeedsRedraw = true;
+    scatterplot.set({ colorBy: 'valueA', pointColor: palette });
+    scatterplot.draw({ x, y, z: zArr, w: zeroArray }).then(() => { redrawEdges(); });
+    if (typeof updateLegend === 'function') updateLegend('', null); // host owns the enrichment legend
+  } catch (_) {}
+}
+
 window.addEventListener('message', (e) => {
   const d = e && e.data;
   if (!d || typeof d.type !== 'string') return;
   if (d.type === 'tmap:setTheme' && (d.mode === 'light' || d.mode === 'dark')) applyTheme(d.mode, d.bg);
   else if (d.type === 'tmap:colorBy') setColorBy(d.layout);
+  else if (d.type === 'tmap:colorByValues') colorByValues(d);
   else if (d.type === 'tmap:highlight') highlightIds(d.ids);
 });
 
