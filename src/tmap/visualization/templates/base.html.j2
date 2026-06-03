@@ -872,7 +872,7 @@
       <button id="tb-clear" title="Clear filters">&times;</button>
     </div>
     <span class="tb-sep"></span>
-    <button class="tb-icon" id="tb-filter" data-panel="explore" title="Explore">
+    <button class="tb-icon" id="tb-filter" data-panel="explore" title="Color & filters">
       <svg viewBox="0 0 16 16" fill="currentColor"><rect x="1" y="2.5" width="14" height="2" rx="1"/><rect x="3" y="7" width="10" height="2" rx="1"/><rect x="5" y="11.5" width="6" height="2" rx="1"/></svg>
     </button>
     <button class="tb-icon" id="tb-search" data-panel="search" title="Search">
@@ -1468,8 +1468,12 @@ function showTooltip(idx) {
 
 function hideTooltip() { tooltip.classList.remove('visible'); }
 
-scatterplot.subscribe('pointover', (idx) => showTooltip(idx));
-scatterplot.subscribe('pointout', hideTooltip);
+// When embedded in a host (Atlas), the host shows its own node card on click;
+// suppress the widget's hover tooltip so there's a single node menu.
+if (!(window.parent && window.parent !== window)) {
+  scatterplot.subscribe('pointover', (idx) => showTooltip(idx));
+  scatterplot.subscribe('pointout', hideTooltip);
+}
 
 // Resize — unified handler for scatterplot, edges, and UI.
 // Use window.innerWidth/Height because scatterplot.set() overwrites
@@ -2649,6 +2653,17 @@ function setColorBy(layout) {
   } catch (_) {}
 }
 
+// Host-driven node focus: select + center a node by id. Lets the site's node
+// card navigate to an interaction partner ("click into the card to jump there").
+async function selectNode(id) {
+  if (id == null) return;
+  const map = await buildIdIndex();
+  const i = map.get(String(id));
+  if (i === undefined) return;
+  try { scatterplot.select([i]); } catch (_) {}
+  try { if (typeof scatterplot.zoomToPoints === 'function') scatterplot.zoomToPoints([i], { transition: true, padding: 0.9 }); } catch (_) {}
+}
+
 // Host-driven overlay coloring: recolor every point from a runtime per-node
 // category array + palette WITHOUT moving any point (same x, y). Used for
 // enrichment coloring so the projection never recomputes. reset:true restores
@@ -2678,6 +2693,7 @@ window.addEventListener('message', (e) => {
   else if (d.type === 'tmap:colorBy') setColorBy(d.layout);
   else if (d.type === 'tmap:colorByValues') colorByValues(d);
   else if (d.type === 'tmap:highlight') highlightIds(d.ids);
+  else if (d.type === 'tmap:selectNode') selectNode(d.id);
 });
 
 // Tell the host the widget is ready so it can push the initial theme/color
