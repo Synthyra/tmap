@@ -557,6 +557,27 @@
     .card-neighbor-row .nb-conf { font-size: 10px; color: #9ca3af; font-variant-numeric: tabular-nums; }
     .card-neighbor-row .nb-arrow { color: #7fb8f0; font-size: 14px; }
     [data-theme="light"] .card-neighbors-title { color: #6e6e73; }
+    /* Cluster membership chips (query-focus tier + community) */
+    .card-cluster { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+    .cl-chip {
+      font-size: 10px; font-weight: 600; padding: 3px 8px; border-radius: 10px;
+      background: rgba(127,184,240,0.14); color: #bcd9f7; border: 1px solid rgba(127,184,240,0.22);
+    }
+    .cl-chip.cl-comm { background: rgba(159,122,234,0.14); color: #d6c6f5; border-color: rgba(159,122,234,0.24); }
+    [data-theme="light"] .cl-chip { background: rgba(0,122,255,0.08); color: #1d4ed8; border-color: rgba(0,122,255,0.2); }
+    [data-theme="light"] .cl-chip.cl-comm { background: rgba(124,58,237,0.08); color: #6d28d9; border-color: rgba(124,58,237,0.2); }
+    /* Enrichment / functional-term rows (read-only) */
+    .card-enrich { margin-top: 8px; }
+    .card-enrich:empty { margin-top: 0; }
+    .card-enrich-row {
+      display: flex; align-items: center; gap: 6px; padding: 4px 8px; margin-bottom: 3px;
+      border-radius: 6px; font-size: 11px;
+      background: rgba(72,187,120,0.07); border: 1px solid rgba(72,187,120,0.14);
+    }
+    .card-enrich-row .en-term { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .card-enrich-row .en-lib { font-size: 9px; color: #9ca3af; text-transform: uppercase; }
+    [data-theme="light"] .card-enrich-row { background: rgba(47,133,90,0.06); border-color: rgba(47,133,90,0.16); }
+    [data-theme="light"] .card-enrich-row .en-lib { color: #6e6e73; }
     [data-theme="light"] .card-neighbor-row { background: rgba(0,122,255,0.05); border-color: rgba(0,122,255,0.14); }
     [data-theme="light"] .card-neighbor-row:hover { background: rgba(0,122,255,0.12); }
     [data-theme="light"] .card-neighbor-row .nb-conf { color: #6e6e73; }
@@ -1127,7 +1148,7 @@ if (metadata.smilesColumn && columnMeta[metadata.smilesColumn]) {
 // Eager-load the columns the embedded node card needs synchronously on click —
 // ID (Query button + neighbor lookups) and UniProt/Name (external DB links).
 // Otherwise their lazy load races the first click and the links go missing.
-for (const need of ['ID', 'UniProt', 'Name']) {
+for (const need of ['ID', 'UniProt', 'Name', 'Community', 'Atlas query focus']) {
   if (columnMeta[need] && !columns[need]) criticalFetches.push(fetchColumn(need));
 }
 await Promise.all(criticalFetches);
@@ -1893,6 +1914,19 @@ function renderCardStack() {
       links.push('<a class="card-link" href="https://www.ncbi.nlm.nih.gov/gene/?term=' + encodeURIComponent(geneSym) + '" target="_blank" rel="noopener">NCBI</a>');
     }
     if (links.length) html += '<div class="card-links card-links-wrap">' + links.join('') + '</div>';
+    // Cluster membership: community + query-focus tier (from the baked columns).
+    const commCol = columns['Community'];
+    const comm = (commCol && commCol.values[idx] != null) ? String(commCol.values[idx]).trim() : '';
+    const tierCol = columns['Atlas query focus'];
+    const tier = (tierCol && tierCol.values[idx] != null) ? String(tierCol.values[idx]).trim() : '';
+    if (comm || tier) {
+      html += '<div class="card-cluster">';
+      if (tier) html += '<span class="cl-chip">' + escapeHtml(tier) + '</span>';
+      if (comm) html += '<span class="cl-chip cl-comm">Community ' + escapeHtml(comm) + '</span>';
+      html += '</div>';
+    }
+    // Enrichment / functional terms — filled in async by the host (tmap:neighbors reply).
+    if (nodeIdBtn) html += '<div class="card-enrich" data-node-id="' + nodeIdBtn.replace(/"/g, '&quot;') + '"></div>';
     // Top-3 connected neighbors — filled in async by the host (tmap:neighbors).
     if (nodeIdBtn) html += '<div class="card-neighbors" data-node-id="' + nodeIdBtn.replace(/"/g, '&quot;') + '"></div>';
     if (nodeIdBtn) {
@@ -2800,25 +2834,44 @@ async function pinNodeById(id) {
   try { if (typeof scatterplot.zoomToPoints === 'function') scatterplot.zoomToPoints([i], { transition: true, padding: 0.9 }); } catch (_) {}
 }
 
-// Fill the current card's neighbor section with the host-supplied top-3 partners.
-function renderNeighbors(id, neighbors) {
+// Fill the current card's neighbor + enrichment sections with host-supplied data
+// (top-3 connected partners + the node's enrichment / functional-term memberships).
+function renderNeighbors(id, neighbors, enrichmentTerms) {
   if (typeof cardStack === 'undefined' || !cardStack) return;
+  // Neighbors (clickable → navigate).
   let box = null;
   cardStack.querySelectorAll('.card-neighbors').forEach((b) => { if (b.dataset.nodeId === String(id)) box = b; });
-  if (!box) return;
-  if (!Array.isArray(neighbors) || neighbors.length === 0) { box.innerHTML = ''; return; }
-  let h = '<div class="card-neighbors-title">Top connected</div>';
-  for (const nb of neighbors.slice(0, 3)) {
-    const conf = (typeof nb.confidence === 'number') ? nb.confidence.toFixed(2) : '';
-    h += '<button class="card-neighbor-row" data-neighbor-id="' + String(nb.id).replace(/"/g, '&quot;') + '">'
-      + '<span class="nb-name">' + escapeHtml(String(nb.name || nb.id)) + '</span>'
-      + (conf ? '<span class="nb-conf">' + conf + '</span>' : '')
-      + '<span class="nb-arrow">&rsaquo;</span></button>';
+  if (box) {
+    if (!Array.isArray(neighbors) || neighbors.length === 0) { box.innerHTML = ''; }
+    else {
+      let h = '<div class="card-neighbors-title">Top connected</div>';
+      for (const nb of neighbors.slice(0, 3)) {
+        const conf = (typeof nb.confidence === 'number') ? nb.confidence.toFixed(2) : '';
+        h += '<button class="card-neighbor-row" data-neighbor-id="' + String(nb.id).replace(/"/g, '&quot;') + '">'
+          + '<span class="nb-name">' + escapeHtml(String(nb.name || nb.id)) + '</span>'
+          + (conf ? '<span class="nb-conf">' + conf + '</span>' : '')
+          + '<span class="nb-arrow">&rsaquo;</span></button>';
+      }
+      box.innerHTML = h;
+      box.querySelectorAll('.card-neighbor-row').forEach((b) => {
+        b.addEventListener('click', () => pinNodeById(b.dataset.neighborId));
+      });
+    }
   }
-  box.innerHTML = h;
-  box.querySelectorAll('.card-neighbor-row').forEach((b) => {
-    b.addEventListener('click', () => pinNodeById(b.dataset.neighborId));
-  });
+  // Enrichment / functional terms (read-only).
+  let ebox = null;
+  cardStack.querySelectorAll('.card-enrich').forEach((b) => { if (b.dataset.nodeId === String(id)) ebox = b; });
+  if (ebox) {
+    if (!Array.isArray(enrichmentTerms) || enrichmentTerms.length === 0) { ebox.innerHTML = ''; }
+    else {
+      let h = '<div class="card-neighbors-title">Enrichment</div>';
+      for (const t of enrichmentTerms.slice(0, 5)) {
+        const lib = t.library ? '<span class="en-lib">' + escapeHtml(String(t.library)) + '</span>' : '';
+        h += '<div class="card-enrich-row"><span class="en-term">' + escapeHtml(String(t.term)) + '</span>' + lib + '</div>';
+      }
+      ebox.innerHTML = h;
+    }
+  }
 }
 
 // Host-driven overlay coloring: recolor every point from a runtime per-node
@@ -2851,7 +2904,7 @@ window.addEventListener('message', (e) => {
   else if (d.type === 'tmap:colorByValues') colorByValues(d);
   else if (d.type === 'tmap:highlight') highlightIds(d.ids);
   else if (d.type === 'tmap:selectNode') selectNode(d.id);
-  else if (d.type === 'tmap:neighbors') renderNeighbors(d.id, d.neighbors);
+  else if (d.type === 'tmap:neighbors') renderNeighbors(d.id, d.neighbors, d.enrichmentTerms);
 });
 
 // Tell the host the widget is ready so it can push the initial theme/color
