@@ -197,7 +197,11 @@
       overflow-y: auto;
       max-height: var(--card-body-max-height);
       padding-right: 2px;
+      /* Scrollable but no visible scrollbar (it looked heavy on the card). */
+      scrollbar-width: none;        /* Firefox */
+      -ms-overflow-style: none;     /* old Edge/IE */
     }
+    .card-body::-webkit-scrollbar { width: 0; height: 0; display: none; } /* Chromium/Safari */
     .card-label {
       font-weight: 700;
       margin-bottom: 8px;
@@ -1509,6 +1513,9 @@ let mouseX = 0, mouseY = 0;
 canvas.addEventListener('mousemove', (e) => { mouseX = e.clientX; mouseY = e.clientY; });
 
 function showTooltip(idx) {
+  // While a clicked card is open, suppress the hover tooltip so it can't overlap /
+  // fight the pinned card's interactive content (links, neighbors, copy).
+  if (typeof pinnedCards !== 'undefined' && pinnedCards.length > 0) { hideTooltip(); return; }
   let label = 'Point ' + idx;
   for (const name of labelOptions) {
     const col = columns[name];
@@ -1839,6 +1846,7 @@ function renderCardStack() {
   }
 
   cardStack.classList.remove('hidden');
+  if (typeof hideTooltip === 'function') hideTooltip(); // card is now the focus — clear any lingering hover tooltip
   const idx = pinnedCards[currentCardIndex];
   const cardConfig = metadata.card || null;
 
