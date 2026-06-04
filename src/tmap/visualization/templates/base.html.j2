@@ -534,6 +534,22 @@
       transition: background 0.12s;
     }
     .card-link:hover { background: rgba(74,158,255,0.14); }
+    /* "Query this protein" action — amber to match the query brand color */
+    .card-query-btn {
+      display: block; width: 100%;
+      margin-top: 8px; padding: 8px 0;
+      border-radius: 6px;
+      font-size: 12px; font-weight: 600;
+      color: #ffb870;
+      background: rgba(237,137,54,0.14);
+      border: 1px solid rgba(237,137,54,0.38);
+      cursor: pointer;
+      transition: background 0.12s;
+    }
+    .card-query-btn:hover { background: rgba(237,137,54,0.24); }
+    [data-theme="light"] .card-query-btn {
+      color: #b45309; background: rgba(237,137,54,0.12); border-color: rgba(237,137,54,0.5);
+    }
     .card-subtitle {
       font-style: italic;
       color: #9ca3af;
@@ -625,7 +641,7 @@
     .side-panel {
       position: fixed; top: 0; right: 0;
       width: 320px; height: 100vh;
-      background: rgba(14, 14, 18, 0.82);
+      background: rgba(20, 20, 26, 0.96);
       backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
       border-left: 1px solid rgba(255,255,255,0.06);
       box-shadow: -10px 0 32px rgba(0,0,0,0.45);
@@ -646,7 +662,7 @@
       display: flex; align-items: center; justify-content: space-between;
       flex-shrink: 0;
     }
-    .panel-title { font-weight: 600; font-size: 13px; color: #e0e0e0; }
+    .panel-title { font-weight: 600; font-size: 13px; color: #f5f5f7; }
     .panel-close {
       width: 24px; height: 24px; border: none; background: transparent;
       color: #666; font-size: 14px; cursor: pointer; border-radius: 4px;
@@ -654,11 +670,11 @@
     }
     .panel-close:hover { color: #fff; background: rgba(255,255,255,0.08); }
     .panel-body { padding: 12px 16px; flex: 1; }
-    .panel-body label { font-size: 11px; color: #999; display: block; margin-bottom: 4px; }
+    .panel-body label { font-size: 11px; color: #c7c7cf; display: block; margin-bottom: 4px; }
     .panel-body select, .panel-body input[type="text"] {
       width: 100%; padding: 6px 8px; border-radius: 6px;
-      border: 1px solid rgba(255,255,255,0.1);
-      background: rgba(255,255,255,0.04); color: #e0e0e0;
+      border: 1px solid rgba(255,255,255,0.24);
+      background: rgba(255,255,255,0.10); color: #f5f5f7;
       font-size: 12px; box-sizing: border-box;
     }
     /* Color panel legend */
@@ -739,20 +755,20 @@
     [data-theme="light"] .tb-slider-wrap input[type="range"]::-webkit-slider-thumb { background: #007aff; }
     [data-theme="light"] .tb-slider-val { color: #6e6e73; }
     [data-theme="light"] .side-panel {
-      background: rgba(255,255,255,0.94); border-left-color: rgba(0,0,0,0.08);
+      background: rgba(255,255,255,0.985); border-left-color: rgba(0,0,0,0.14);
     }
     [data-theme="light"] .panel-title { color: #1d1d1f; }
-    [data-theme="light"] .panel-close { color: #aeaeb2; }
+    [data-theme="light"] .panel-close { color: #8a8a8e; }
     [data-theme="light"] .panel-close:hover { color: #1d1d1f; background: rgba(0,0,0,0.05); }
-    [data-theme="light"] .panel-body label { color: #6e6e73; }
+    [data-theme="light"] .panel-body label { color: #3a3a3c; }
     [data-theme="light"] .panel-body select, [data-theme="light"] .panel-body input[type="text"] {
-      border-color: rgba(0,0,0,0.12); background: rgba(0,0,0,0.03); color: #1d1d1f;
+      border-color: rgba(0,0,0,0.28); background: #ffffff; color: #1d1d1f;
     }
     [data-theme="light"] .explore-section + .explore-section {
       border-top-color: rgba(0,0,0,0.08);
     }
     [data-theme="light"] .explore-section-title {
-      color: #6e6e73;
+      color: #3a3a3c;
     }
     [data-theme="light"] #panel-explore .fs-header {
       border-bottom-color: rgba(0,0,0,0.06);
@@ -1468,12 +1484,11 @@ function showTooltip(idx) {
 
 function hideTooltip() { tooltip.classList.remove('visible'); }
 
-// When embedded in a host (Atlas), the host shows its own node card on click;
-// suppress the widget's hover tooltip so there's a single node menu.
-if (!(window.parent && window.parent !== window)) {
-  scatterplot.subscribe('pointover', (idx) => showTooltip(idx));
-  scatterplot.subscribe('pointout', hideTooltip);
-}
+// The semi-transparent hover tooltip is the quick-peek. It works both standalone
+// and embedded — the host no longer renders its own popup, so the widget owns the
+// node menu (hover = tooltip, click = pinned card).
+scatterplot.subscribe('pointover', (idx) => showTooltip(idx));
+scatterplot.subscribe('pointout', hideTooltip);
 
 // Resize — unified handler for scatterplot, edges, and UI.
 // Use window.innerWidth/Height because scatterplot.set() overwrites
@@ -1501,7 +1516,15 @@ for (const name of layoutOptions) {
   colorSelect.appendChild(opt);
 }
 if (initialColor) colorSelect.value = initialColor;
-colorSelect.addEventListener('change', (e) => applyColor(e.target.value));
+colorSelect.addEventListener('change', (e) => {
+  applyColor(e.target.value);
+  // Notify the host so its external "Color by" control + legend stay in sync.
+  // Only genuine user picks reach here — the host-driven setColorBy() sets
+  // colorSelect.value programmatically (no 'change' event fires), so no echo loop.
+  if (window.parent && window.parent !== window) {
+    try { window.parent.postMessage({ type: 'tmap:colorChanged', layout: e.target.value }, '*'); } catch (_) {}
+  }
+});
 
 // Initial render
 updateProgress(95, 'Rendering...');
@@ -1719,9 +1742,10 @@ canvas.addEventListener('mouseup', (e) => {
 
   const idx = hoveredPointIndex;
 
-  // When embedded in a host (Atlas), the host owns the node menu. Suppress the
-  // widget's own card and bridge the click instead (with viewport coords so the
-  // host can position its popup at the cursor). Only the host menu shows.
+  // When embedded in a host (Atlas), bridge the click so the host stays aware of
+  // the selection (highlight / enrichment context), but STILL render the widget's
+  // own themed card below — it is the single node menu (the host's white popup is
+  // gone). Hover = tooltip, click = pinned card (with Query button + links).
   if (IS_EMBEDDED) {
     let clickedId = null;
     try {
@@ -1729,7 +1753,6 @@ canvas.addEventListener('mouseup', (e) => {
       if (idCol && idCol.values && idCol.values[idx] !== undefined) clickedId = String(idCol.values[idx]);
     } catch (_) { /* column not loaded yet */ }
     window.parent.postMessage({ type: 'tmap:nodeClick', pointIndex: idx, id: clickedId, x: e.clientX, y: e.clientY }, '*');
-    return;
   }
 
   const existingIndex = pinnedCards.indexOf(idx);
@@ -1806,6 +1829,26 @@ function renderCardStack() {
     const subtitle = resolveCardField(cardConfig && cardConfig.subtitleColumn, idx, null);
     if (subtitle) {
       html += '<div class="card-subtitle">' + truncateString(subtitle, 50) + '</div>';
+    }
+  }
+
+  // Embedded host actions: external links + a "Query" button. Built here (not via
+  // the global card config) so protein links only render for nodes that HAVE a
+  // UniProt accession — ligands have none, so they get no broken links.
+  if (IS_EMBEDDED) {
+    const upCol = columns['UniProt'];
+    const up = (upCol && upCol.values[idx] != null) ? String(upCol.values[idx]).trim() : '';
+    if (up) {
+      html += '<div class="card-links">';
+      html += '<a class="card-link" href="https://www.uniprot.org/uniprotkb/' + encodeURIComponent(up) + '/entry" target="_blank" rel="noopener">UniProt</a>';
+      html += '<a class="card-link" href="https://alphafold.ebi.ac.uk/entry/' + encodeURIComponent(up) + '" target="_blank" rel="noopener">AlphaFold</a>';
+      html += '<a class="card-link" href="https://www.rcsb.org/uniprot/' + encodeURIComponent(up) + '" target="_blank" rel="noopener">PDB</a>';
+      html += '</div>';
+    }
+    const idColBtn = columns['ID'];
+    const nodeIdBtn = (idColBtn && idColBtn.values[idx] != null) ? String(idColBtn.values[idx]) : '';
+    if (nodeIdBtn) {
+      html += '<button class="card-query-btn" data-query-id="' + nodeIdBtn.replace(/"/g, '&quot;') + '">Query this protein</button>';
     }
   }
 
@@ -1914,6 +1957,14 @@ function renderCardStack() {
       }
     });
   });
+
+  // "Query this protein" — bridge to the host, which runs a background job.
+  const queryBtn = cardStack.querySelector('.card-query-btn');
+  if (queryBtn) {
+    queryBtn.addEventListener('click', () => {
+      try { window.parent.postMessage({ type: 'tmap:queryNode', id: queryBtn.dataset.queryId }, '*'); } catch (_) {}
+    });
+  }
 
   // Trigger custom event for SMILES template extension
   cardStack.dispatchEvent(new CustomEvent('cardrendered', { detail: { idx, smilesValue } }));
