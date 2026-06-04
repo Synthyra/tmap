@@ -534,6 +534,32 @@
       transition: background 0.12s;
     }
     .card-link:hover { background: rgba(74,158,255,0.14); }
+    /* Wrap when there are many reference links (6+) instead of squashing them */
+    .card-links-wrap { flex-wrap: wrap; }
+    .card-links-wrap .card-link { flex: 0 0 auto; padding: 5px 9px; }
+    /* Top-3 connected neighbors — clickable rows that navigate to the node */
+    .card-neighbors { margin-top: 8px; }
+    .card-neighbors:empty { margin-top: 0; }
+    .card-neighbors-title {
+      font-size: 10px; font-weight: 600; letter-spacing: 0.3px;
+      color: #9ca3af; text-transform: uppercase; margin-bottom: 4px;
+    }
+    .card-neighbor-row {
+      display: flex; align-items: center; gap: 6px; width: 100%;
+      padding: 5px 8px; margin-bottom: 4px;
+      border-radius: 6px; cursor: pointer; text-align: left;
+      background: rgba(127,184,240,0.06);
+      border: 1px solid rgba(127,184,240,0.12);
+      color: inherit; font-size: 11px; transition: background 0.12s;
+    }
+    .card-neighbor-row:hover { background: rgba(127,184,240,0.16); }
+    .card-neighbor-row .nb-name { flex: 1; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .card-neighbor-row .nb-conf { font-size: 10px; color: #9ca3af; font-variant-numeric: tabular-nums; }
+    .card-neighbor-row .nb-arrow { color: #7fb8f0; font-size: 14px; }
+    [data-theme="light"] .card-neighbors-title { color: #6e6e73; }
+    [data-theme="light"] .card-neighbor-row { background: rgba(0,122,255,0.05); border-color: rgba(0,122,255,0.14); }
+    [data-theme="light"] .card-neighbor-row:hover { background: rgba(0,122,255,0.12); }
+    [data-theme="light"] .card-neighbor-row .nb-conf { color: #6e6e73; }
     /* "Query this protein" action — amber to match the query brand color */
     .card-query-btn {
       display: block; width: 100%;
@@ -1097,6 +1123,12 @@ if (metadata.proteinColumn && columnMeta[metadata.proteinColumn]) {
 }
 if (metadata.smilesColumn && columnMeta[metadata.smilesColumn]) {
   criticalFetches.push(fetchColumn(metadata.smilesColumn));
+}
+// Eager-load the columns the embedded node card needs synchronously on click —
+// ID (Query button + neighbor lookups) and UniProt/Name (external DB links).
+// Otherwise their lazy load races the first click and the links go missing.
+for (const need of ['ID', 'UniProt', 'Name']) {
+  if (columnMeta[need] && !columns[need]) criticalFetches.push(fetchColumn(need));
 }
 await Promise.all(criticalFetches);
 
@@ -1723,6 +1755,9 @@ const IS_EMBEDDED = !!(window.parent && window.parent !== window);
 // Drag detection - only select on click, not drag
 let mouseDownPos = null;
 const DRAG_THRESHOLD = 5;
+// Last canvas-click viewport coords — so the embedded card renders at the node.
+// Cleared to null on neighbor navigation so a navigated card keeps its position.
+let lastClickXY = null;
 
 canvas.addEventListener('mousedown', (e) => {
   mouseDownPos = { x: e.clientX, y: e.clientY };
@@ -1741,6 +1776,7 @@ canvas.addEventListener('mouseup', (e) => {
   if (hoveredPointIndex < 0) return;
 
   const idx = hoveredPointIndex;
+  lastClickXY = { x: e.clientX, y: e.clientY }; // render the card at the clicked node
 
   // When embedded in a host (Atlas), bridge the click so the host stays aware of
   // the selection (highlight / enrichment context), but STILL render the widget's
@@ -1838,15 +1874,27 @@ function renderCardStack() {
   if (IS_EMBEDDED) {
     const upCol = columns['UniProt'];
     const up = (upCol && upCol.values[idx] != null) ? String(upCol.values[idx]).trim() : '';
-    if (up) {
-      html += '<div class="card-links">';
-      html += '<a class="card-link" href="https://www.uniprot.org/uniprotkb/' + encodeURIComponent(up) + '/entry" target="_blank" rel="noopener">UniProt</a>';
-      html += '<a class="card-link" href="https://alphafold.ebi.ac.uk/entry/' + encodeURIComponent(up) + '" target="_blank" rel="noopener">AlphaFold</a>';
-      html += '<a class="card-link" href="https://www.rcsb.org/uniprot/' + encodeURIComponent(up) + '" target="_blank" rel="noopener">PDB</a>';
-      html += '</div>';
-    }
+    const nameCol = columns['Name'];
+    const gene = (nameCol && nameCol.values[idx] != null) ? String(nameCol.values[idx]).trim() : '';
     const idColBtn = columns['ID'];
     const nodeIdBtn = (idColBtn && idColBtn.values[idx] != null) ? String(idColBtn.values[idx]) : '';
+    const links = [];
+    // Accession-based reference DBs.
+    if (up) {
+      links.push('<a class="card-link" href="https://www.uniprot.org/uniprotkb/' + encodeURIComponent(up) + '/entry" target="_blank" rel="noopener">UniProt</a>');
+      links.push('<a class="card-link" href="https://alphafold.ebi.ac.uk/entry/' + encodeURIComponent(up) + '" target="_blank" rel="noopener">AlphaFold</a>');
+      links.push('<a class="card-link" href="https://www.rcsb.org/uniprot/' + encodeURIComponent(up) + '" target="_blank" rel="noopener">PDB</a>');
+    }
+    // Gene-symbol reference DBs (use the gene name when it isn't just the accession).
+    const geneSym = (gene && gene !== up) ? gene : up;
+    if (geneSym) {
+      links.push('<a class="card-link" href="https://string-db.org/cgi/network?identifiers=' + encodeURIComponent(geneSym) + '" target="_blank" rel="noopener">STRING</a>');
+      links.push('<a class="card-link" href="https://www.genecards.org/cgi-bin/carddisp.pl?gene=' + encodeURIComponent(geneSym) + '" target="_blank" rel="noopener">GeneCards</a>');
+      links.push('<a class="card-link" href="https://www.ncbi.nlm.nih.gov/gene/?term=' + encodeURIComponent(geneSym) + '" target="_blank" rel="noopener">NCBI</a>');
+    }
+    if (links.length) html += '<div class="card-links card-links-wrap">' + links.join('') + '</div>';
+    // Top-3 connected neighbors — filled in async by the host (tmap:neighbors).
+    if (nodeIdBtn) html += '<div class="card-neighbors" data-node-id="' + nodeIdBtn.replace(/"/g, '&quot;') + '"></div>';
     if (nodeIdBtn) {
       html += '<button class="card-query-btn" data-query-id="' + nodeIdBtn.replace(/"/g, '&quot;') + '">Query this protein</button>';
     }
@@ -1964,6 +2012,26 @@ function renderCardStack() {
     queryBtn.addEventListener('click', () => {
       try { window.parent.postMessage({ type: 'tmap:queryNode', id: queryBtn.dataset.queryId }, '*'); } catch (_) {}
     });
+  }
+
+  if (IS_EMBEDDED) {
+    // Render the card at the clicked node (so it "stays where you clicked"),
+    // clamped to the viewport. Navigated cards (lastClickXY=null) keep position.
+    if (lastClickXY) {
+      const r = cardStack.getBoundingClientRect();
+      const pad = 12;
+      let lx = lastClickXY.x + 14, ty = lastClickXY.y + 14;
+      if (lx + r.width > window.innerWidth - pad) lx = Math.max(pad, lastClickXY.x - r.width - 14);
+      if (ty + r.height > window.innerHeight - pad) ty = Math.max(pad, window.innerHeight - r.height - pad);
+      cardStack.style.left = lx + 'px';
+      cardStack.style.top = ty + 'px';
+    }
+    // Ask the host for this node's top-3 connected neighbors (filled in async).
+    try {
+      const idCol3 = columns['ID'];
+      const nid = (idCol3 && idCol3.values[idx] != null) ? String(idCol3.values[idx]) : null;
+      if (nid) window.parent.postMessage({ type: 'tmap:getNeighbors', id: nid }, '*');
+    } catch (_) {}
   }
 
   // Trigger custom event for SMILES template extension
@@ -2715,6 +2783,44 @@ async function selectNode(id) {
   try { if (typeof scatterplot.zoomToPoints === 'function') scatterplot.zoomToPoints([i], { transition: true, padding: 0.9 }); } catch (_) {}
 }
 
+// Navigate to a node by id and PIN its card (used by neighbor-row clicks — "take
+// it to the next one"). Keeps the card's current position (no lastClickXY) so it
+// doesn't jump around as you hop between neighbors.
+async function pinNodeById(id) {
+  if (id == null) return;
+  const map = await buildIdIndex();
+  const i = map.get(String(id));
+  if (i === undefined) return;
+  const existing = pinnedCards.indexOf(i);
+  if (existing >= 0) currentCardIndex = existing;
+  else { if (pinnedCards.length >= MAX_CARDS) pinnedCards.shift(); pinnedCards.push(i); currentCardIndex = pinnedCards.length - 1; }
+  lastClickXY = null; // navigated, not clicked → keep card position
+  renderCardStack();
+  try { scatterplot.select([i]); } catch (_) {}
+  try { if (typeof scatterplot.zoomToPoints === 'function') scatterplot.zoomToPoints([i], { transition: true, padding: 0.9 }); } catch (_) {}
+}
+
+// Fill the current card's neighbor section with the host-supplied top-3 partners.
+function renderNeighbors(id, neighbors) {
+  if (typeof cardStack === 'undefined' || !cardStack) return;
+  let box = null;
+  cardStack.querySelectorAll('.card-neighbors').forEach((b) => { if (b.dataset.nodeId === String(id)) box = b; });
+  if (!box) return;
+  if (!Array.isArray(neighbors) || neighbors.length === 0) { box.innerHTML = ''; return; }
+  let h = '<div class="card-neighbors-title">Top connected</div>';
+  for (const nb of neighbors.slice(0, 3)) {
+    const conf = (typeof nb.confidence === 'number') ? nb.confidence.toFixed(2) : '';
+    h += '<button class="card-neighbor-row" data-neighbor-id="' + String(nb.id).replace(/"/g, '&quot;') + '">'
+      + '<span class="nb-name">' + escapeHtml(String(nb.name || nb.id)) + '</span>'
+      + (conf ? '<span class="nb-conf">' + conf + '</span>' : '')
+      + '<span class="nb-arrow">&rsaquo;</span></button>';
+  }
+  box.innerHTML = h;
+  box.querySelectorAll('.card-neighbor-row').forEach((b) => {
+    b.addEventListener('click', () => pinNodeById(b.dataset.neighborId));
+  });
+}
+
 // Host-driven overlay coloring: recolor every point from a runtime per-node
 // category array + palette WITHOUT moving any point (same x, y). Used for
 // enrichment coloring so the projection never recomputes. reset:true restores
@@ -2745,6 +2851,7 @@ window.addEventListener('message', (e) => {
   else if (d.type === 'tmap:colorByValues') colorByValues(d);
   else if (d.type === 'tmap:highlight') highlightIds(d.ids);
   else if (d.type === 'tmap:selectNode') selectNode(d.id);
+  else if (d.type === 'tmap:neighbors') renderNeighbors(d.id, d.neighbors);
 });
 
 // Tell the host the widget is ready so it can push the initial theme/color
